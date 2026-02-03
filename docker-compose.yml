@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: articence-postgres
+    environment:
+      POSTGRES_DB: articence_db
+      POSTGRES_USER: articence_user
+      POSTGRES_PASSWORD: articence_password_2026
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U articence_user -d articence_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - articence-network
+
+  # Optional: pgAdmin for database management GUI
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: articence-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@articence.local
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_LISTEN_PORT: 80
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    networks:
+      - articence-network
+
+volumes:
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  articence-network:
+    driver: bridge

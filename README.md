@@ -1,55 +1,58 @@
-# PBX Call Processing Microservice
+# PBX Call Processing System
 
-Microservice for handling concurrent call streams from a PBX system with AI processing (transcription & sentiment analysis) and real-time WebSocket updates. Designed to deal with unreliable external services.
+This is a microservice I built to handle call streams from a PBX system. When agents aren't available, calls get routed to an AI voice bot. The tricky part? The AI service is pretty unreliable (it fails about 25% of the time), and we're getting thousands of concurrent calls that need to be processed without blocking.
 
-## Approach
+## Why I Built It This Way
 
-The main challenges were handling high concurrency, dealing with flaky external AI services, and preventing race conditions. The solution uses async/await throughout for non-blocking I/O, separates ingestion from processing, and implements optimistic locking to handle concurrent updates safely.
+The biggest headaches were:
+- Handling tons of concurrent requests without things grinding to a halt
+- Dealing with an AI service that likes to fail randomly
+- Making sure concurrent updates don't overwrite each other
 
-Key decision: Return 202 Accepted immediately, then process AI stuff in the background. This keeps response times under 50ms even when the AI service is being slow.
+I decided to use async/await everywhere to keep things non-blocking. The key insight was to separate "receiving data" from "processing data". When a call packet comes in, I immediately return 202 Accepted (takes ~20ms), then handle the heavy AI stuff in the background. This way, even if the AI service is being slow or failing, it doesn't block new requests.
 
-## Technical Decisions
+## How It Works
 
-### Non-Blocking Ingestion
+### Fast API Responses
 
-The API returns 202 Accepted immediately after writing to the database. AI processing happens in the background so it doesn't block the response. Using asyncpg for the PostgreSQL driver to keep everything async.
+The API sends back 202 Accepted right after writing to the database. No waiting around for AI processing. I'm using asyncpg because it's the fastest async PostgreSQL driver I could find.
 
-Connection pool is set to 20 with 10 overflow - seems to handle the load fine in testing.
+Connection pool is 20 + 10 overflow. Seems to work well so far.
 
-### Handling Concurrent Updates
+### Race Condition Handling
 
-Using optimistic locking with a version field. When two requests try to update the same call simultaneously, one will see the version changed and retry. Max 3 retry attempts before giving up.
+Instead of database locks (which suck for performance), I went with optimistic locking. Each record has a version number. If two requests try to update the same call at once, one will see the version changed and automatically retry. Gives up after 3 tries.
 
-This approach avoids holding database locks and performs better than pessimistic locking for this use case.
+Works way better than holding locks.
 
 ### State Machine
 
-Calls go through: `IN_PROGRESS → COMPLETED → PROCESSING_AI → FAILED → ARCHIVED`
+Calls flow through states: `IN_PROGRESS → COMPLETED → PROCESSING_AI → FAILED → ARCHIVED`
 
-The state machine validator prevents invalid transitions (e.g., can't go from ARCHIVED back to IN_PROGRESS). Both application-level and database constraints enforce this.
+There's validation to prevent nonsense like going from ARCHIVED back to IN_PROGRESS. Enforced both in code and at the database level.
 
-### Retry Strategy
+### Retry Logic
 
-The AI service fails ~25% of the time, so we retry with exponential backoff: 1s, 2s, 4s, etc. up to 60s max. Using the tenacity library for this.
+Since the AI service fails a lot (~25% of requests), I added exponential backoff: starts at 1s, then 2s, 4s, etc. up to 60s max. Using the tenacity library which handles this stuff nicely.
 
-There's also a background worker that runs every 5 minutes to pick up any failed AI tasks. Max 5 total attempts before marking as permanently failed.
+There's also a background worker that checks for failed tasks every 5 minutes and retries them. After 5 total attempts, it gives up.
 
-### WebSocket Updates
+### Real-time Updates
 
-Supervisors can connect via WebSocket to get real-time updates on call events. There's a heartbeat every 30s to keep connections alive, and the manager handles filtering so supervisors only get updates for their calls.
+Supervisors can connect via WebSocket to see what's happening with calls in real-time. I send a heartbeat every 30s to keep connections alive. The connection manager filters events so supervisors only see updates for calls they care about.
 
-### Packet Ordering
+### Packet Order
 
-Packets can arrive out of order due to network issues. We log warnings when there are sequence gaps but don't block processing. The database has a unique constraint on (call_id, sequence_number) to handle duplicates.
+Network packets can arrive out of order. When I detect gaps in the sequence, I log a warning but keep processing anyway. The database has a unique constraint to catch duplicates automatically.
 
-## Tech Stack
+## What I Used
 
-- FastAPI + Uvicorn (async web framework)
-- PostgreSQL with asyncpg driver
-- SQLAlchemy 2.0 for ORM
-- Pydantic v2 for validation
-- tenacity for retry logic
-- pytest + httpx for testing
+- **FastAPI** - Because it's fast and has great async support
+- **PostgreSQL + asyncpg** - Reliable database with the fastest async driver
+- **SQLAlchemy 2.0** - ORM that finally supports async properly
+- **Pydantic v2** - Type validation (catches bugs early)
+- **tenacity** - Retry logic without reinventing the wheel
+- **pytest + httpx** - Testing concurrent requests
 
 ## Project Structure
 
@@ -86,11 +89,11 @@ articence/
 └── README.md                    # This file
 ```
 
-## Setup
+## Getting Started
 
-Requirements: Python 3.11+, PostgreSQL 15+, Poetry
+You'll need Python 3.11 or higher, PostgreSQL 15+, and Poetry installed.
 
-### Installation
+### 1. Install Dependencies
 
 ```bash
 # Clone the repository
@@ -114,93 +117,69 @@ pip install poetry
 poetry install
 ```
 
-### Database Setup
+### 2. Set Up the Database
 
-Using Docker (easier):
+If you have Docker (easier way):
 
 ```bash
-# Start PostgreSQL container
 docker-compose up -d postgres
-
-# Database will be available at:
-# postgresql://articence_user:articence_password_2026@localhost:5432/articence_db
 ```
 
-Or native PostgreSQL:
+Or if you prefer native PostgreSQL:
 
 ```bash
-# Create database
 createdb articence_db
-
-# Update .env file with your credentials
-DATABASE_URL=postgresql+asyncpg://postgres:YOUR_PASSWORD@localhost:5432/articence_db
 ```
 
-### 3. Run Database Migrations
+Then update the `.env` file with your database password.
+
+### 3. Run Migrations
 
 ```bash
-# Run Alembic migrations
 alembic upgrade head
 ```
 
-### Environment Config
+This creates all the tables you need.
 
-The `.env` file should be set up already. Main settings:
+### 4. Start Everything
 
-```env
-# Database
-DATABASE_URL=postgresql+asyncpg://postgres:Halok@123@localhost:5432/articence_db
+You'll need two terminal windows.
 
-# AI Service (points to mock service)
-AI_SERVICE_URL=http://localhost:8001
-
-# Server
-HOST=0.0.0.0
-PORT=8000
-```
-
-### Start Services
-
-Terminal 1 - Mock AI Service:
+**Terminal 1** - Start the mock AI service:
 
 ```bash
 python tests/mock_ai_service.py
-
-# Server starts at http://localhost:8001
-# Simulates 25% failure rate with 1-3s latency
 ```
 
-Terminal 2 - Main API:
+This simulates the flaky external AI service (port 8001).
+
+**Terminal 2** - Start the main API:
 
 ```bash
 python run.py
-
-# Server starts at http://localhost:8000
-# API docs at http://localhost:8000/docs
 ```
 
-### Verify It Works
+API runs on port 8000. Visit http://localhost:8000/docs to see the interactive API docs.
 
-Run the demo script:
+### 5. Test It Out
+
+Run the demo to see everything working:
 
 ```bash
 python demo_full_requirements.py
 ```
 
-Should see all requirements passing.
-
-### Run Tests
+Or run the integration tests:
 
 ```bash
-# Run all integration tests
 pytest tests/test_concurrent_processing.py -v
 
 # Expected: 4 passed
 ```
 
-## API Usage
+## Using the API
 
-Ingest a call packet:
+Send a call packet:
 
 ```bash
 curl -X POST http://localhost:8000/v1/call/stream/call_123 \
@@ -212,7 +191,7 @@ curl -X POST http://localhost:8000/v1/call/stream/call_123 \
   }'
 ```
 
-Response:
+You'll get back something like:
 ```json
 {
   "call_id": "call_123",
@@ -223,33 +202,35 @@ Response:
 }
 ```
 
-Get call state:
+Check call status:
 
 ```bash
 curl http://localhost:8000/v1/call/call_123
 ```
 
-WebSocket connection:
+Connect via WebSocket for real-time updates:
 
 ```javascript
 const ws = new WebSocket('ws://localhost:8000/api/v1/ws/supervisor/super_123');
 
 ws.onmessage = (event) => {
   const data = JSON.parse(event.data);
-  console.log('Event:', data.event_type, data);
+  console.log('Got update:', data.event_type, data);
 };
 ```
 
-API docs available at http://localhost:8000/docs
+Interactive docs are at http://localhost:8000/docs
 
 ## Testing
 
-The integration tests check concurrent request handling:
+I wrote integration tests to make sure concurrent requests don't break things:
 
-- Duplicate packets (same sequence) - only one inserted
-- Adjacent sequences arriving simultaneously - both succeed
-- 50 concurrent requests - no lost updates
-- Concurrent state transitions - consistent final state
+- Sending duplicate packets → only one gets inserted (idempotency works)
+- Two adjacent packets arriving at the same time → both succeed (no race conditions)
+- 50 concurrent requests → no lost updates (optimistic locking works)
+- Concurrent state changes → consistent final state
+
+Run them with:
 
 ```bash
 pytest tests/test_concurrent_processing.py -v
@@ -257,24 +238,26 @@ pytest tests/test_concurrent_processing.py -v
 
 ## Performance
 
-Response times average ~20ms, well under the 50ms target. Tested with 50+ concurrent requests without issues. Database connection pool is 20+10 overflow.
+Response times are around 20ms on average, well under the 50ms target. I've tested it with 50+ concurrent requests without issues. Connection pool is set to 20 with 10 overflow.
 
-## Notes
+## Random Notes
 
-- Packet sequence gaps are logged but don't block processing
-- Optimistic locking handles concurrent updates (3 retry attempts)
-- Background worker retries failed AI tasks every 5 minutes
-- WebSocket connections use heartbeats to stay alive
+A few things to know:
 
-Database queries for debugging:
+- If packets arrive out of order, I log a warning but keep processing
+- Optimistic locking handles concurrent updates (retries up to 3 times)
+- There's a background worker that retries failed AI tasks every 5 minutes
+- WebSocket connections have a 30s heartbeat to stay alive
+
+Some useful SQL queries for debugging:
 
 ```sql
--- Check call states
+-- See what state calls are in
 SELECT call_id, state, ai_status, version FROM calls;
 
--- Check events
+-- Check packet sequence
 SELECT call_id, sequence_number, created_at FROM call_events ORDER BY created_at;
 
--- Check AI results
+-- Look at AI results
 SELECT call_id, status, transcript FROM ai_results;
 ```

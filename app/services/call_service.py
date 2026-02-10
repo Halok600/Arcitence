@@ -66,8 +66,9 @@ class CallService:
 
         # Broadcast packet ingestion to supervisors (non-blocking)
         if was_inserted:
-            asyncio.create_task(
-                websocket_manager.broadcast(
+            try:
+                logger.info(f"Broadcasting PACKET_INGESTED for call_id={call_id}")
+                result = await websocket_manager.broadcast(
                     event_type="PACKET_INGESTED",
                     call_id=call_id,
                     data={
@@ -78,7 +79,9 @@ class CallService:
                     },
                     agent_id=call.agent_id if hasattr(call, 'agent_id') else None
                 )
-            )
+                logger.info(f"Broadcast result: {result} supervisors notified")
+            except Exception as e:
+                logger.error(f"WebSocket broadcast failed: {e}")
 
         # Step 5: Detect sequence gaps (non-blocking warning)
         gap_warning = None

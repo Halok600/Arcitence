@@ -231,8 +231,8 @@ class WebSocketManager:
         self._total_messages_sent += success_count
         self._total_errors += error_count
         
-        logger.debug(
-            f"Broadcast: {event_type} for {call_id} → {success_count} supervisors",
+        logger.info(
+            f"Broadcast: {event_type} for {call_id} → {success_count} supervisors (targets: {len(target_supervisors)}, connections: {len(self._connections)})",
             extra={
                 "event_type": event_type,
                 "call_id": call_id,

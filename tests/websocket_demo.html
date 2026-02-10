@@ -315,8 +315,8 @@
                 return;
             }
             
-            // Build WebSocket URL
-            let url = `ws://localhost:8000/api/v1/ws/supervisor/${supervisorId}`;
+            // Build WebSocket URL (correct path without /api prefix)
+            let url = `ws://localhost:8000/v1/ws/supervisor/${supervisorId}`;
             const params = [];
             if (agentId) params.push(`agent_id=${agentId}`);
             if (callId) params.push(`call_id=${callId}`);
